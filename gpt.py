@@ -2,34 +2,32 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-# device
+# hyperparameters
+batch_size = 32
+block_size = 8
+max_iters = 3000
+eval_interval = 300
+learning_rate = 1e-2
+eval_iters = 200
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-print('using device:', device)
 
-# step 1: read the shakespeare text
-with open('input.txt', 'r') as file:
-    text = file.read()
+torch.manual_seed(1337)
 
-# step 2: create a set of unique characters
+# load data
+with open('input.txt', 'r') as f:
+    text = f.read()
+
 chars = sorted(list(set(text)))
 vocab_size = len(chars)
-
-# step 3: convert characters to numbers
 stoi = { ch:i for i,ch in enumerate(chars) }
 itos = { i:ch for i,ch in enumerate(chars) }
 encode = lambda s: [stoi[c] for c in s]
 decode = lambda l: ''.join([itos[i] for i in l])
 
-# step 4: encode entire text into tensor
 data = torch.tensor(encode(text), dtype=torch.long)
 n = int(0.9*len(data))
 train_data = data[:n]
 val_data = data[n:]
-
-# step 5: get batch function
-torch.manual_seed(1337)
-batch_size = 32
-block_size = 8
 
 def get_batch(split):
     data = train_data if split == 'train' else val_data
@@ -38,7 +36,20 @@ def get_batch(split):
     y = torch.stack([data[i+1:i+block_size+1] for i in ix])
     return x, y
 
-# step 6: bigram language model
+@torch.no_grad()
+def estimate_loss():
+    out = {}
+    model.eval()
+    for split in ['train', 'val']:
+        losses = torch.zeros(eval_iters)
+        for k in range(eval_iters):
+            X, Y = get_batch(split)
+            logits, loss = model(X, Y)
+            losses[k] = loss.item()
+        out[split] = losses.mean()
+    model.train()
+    return out
+
 class BigramLanguageModel(nn.Module):
 
     def __init__(self, vocab_size):
@@ -65,16 +76,19 @@ class BigramLanguageModel(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1)
         return idx
 
-# step 7: train
-m = BigramLanguageModel(vocab_size)
-optimizer = torch.optim.AdamW(m.parameters(), lr=1e-3)
+model = BigramLanguageModel(vocab_size)
+m = model.to(device)
 
-for steps in range(10000):
+optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+
+for iter in range(max_iters):
+    if iter % eval_interval == 0:
+        losses = estimate_loss()
+        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
     xb, yb = get_batch('train')
-    logits, loss = m(xb, yb)
+    logits, loss = model(xb, yb)
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     optimizer.step()
 
-print(loss.item())
-print(decode(m.generate(torch.zeros((1, 1), dtype=torch.long), max_new_tokens=500)[0].tolist()))
+print(decode(m.generate(torch.zeros((1, 1), dtype=torch.long, device=device), max_new_tokens=500)[0].tolist()))
